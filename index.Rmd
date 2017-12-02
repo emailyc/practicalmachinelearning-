@@ -1,0 +1,132 @@
+---
+title: \center "Human Activity Recognition" \center
+author: \center "Yiu Chung Wong" \center
+date: \center "`r format(Sys.time(), '%d %B, %Y')`" \center
+output: html_document
+html_document:
+keep_md: yes
+pdf_document: default
+word_document: default
+---
+
+```{r setup, include=FALSE, echo = FALSE, results = 'hide'}
+knitr::opts_chunk$set(echo = FALSE, cache=TRUE, results = 'hide')
+
+#Prepare environment    
+library(caret); library(rpart); library(e1071); library(rattle); library(doParallel); library(parallel); library(randomForest)
+set.seed(54321)
+
+#make testing and validarion data   
+# inTests <- createDataPartition(y=tests$classe, p=0.50, list=FALSE)
+# test = tests[inTests,]
+# validation = tests[-inTests,]
+```
+
+# Overview
+This report explores the Weight Lifting Exercises Dataset and attempt to predict the type of performance based on data from various sensors on the body.
+
+##Data
+The training data for this project are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv):
+
+The test data are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv):
+
+The data for this project come from [this source](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har). If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+Graphs are placed in the appendix for references. However, code are placed within the main text to show the flow of model development.
+
+###Load data
+1. The first document is the dataset for training the model.
+2. The second document contains data which we are trying to predict.
+```{r, echo=TRUE}
+#load data from working directory
+originalTrain = read.csv(file = "pml-training.csv", header = TRUE)
+validation = read.csv(file = "pml-testing.csv", header = TRUE)
+```
+
+###Data cleaning
+The data are further cleaned by:  
+* Removing the first seven fields which are just descriptive data  
+* Removing near zero variance fields  
+* Removing fields with mostly NA  
+
+```{r, echo=TRUE}
+#Remove the first seven columns
+originalTrain <- originalTrain[,-(1:7)]; validation <- validation[,-(1:7)]
+
+#Remove NearZeroVariance variables
+nzv <- nearZeroVar(originalTrain,saveMetrics=TRUE)
+originalTrain <- originalTrain[,nzv$nzv == FALSE]
+validation <- validation[,nzv$nzv == FALSE]
+
+#Clean variables with mostly NA
+trainNA <- apply(originalTrain, 2, function(col){sum(is.na(col))/length(col)})
+originalTrain <- originalTrain[,which(trainNA < .1)]
+validation <- validation[,which(trainNA < .1)]
+```
+
+
+### Pre-processing
+The training data set is sliced into 70% for training and 30% for testing
+```{r, echo=TRUE}
+#Data slicing
+inTrain <- createDataPartition(y=originalTrain$classe, p=0.70, list=FALSE)
+train <- originalTrain[inTrain,]
+test <- originalTrain[-inTrain,]
+```
+
+###Principal Component Analysis
+Reduce the data set while retaining 99% of the information
+```{r, echo=TRUE}
+prComp <- preProcess(train[,-length(train)],method="pca", thresh = 0.99)
+trainPC <- predict(prComp, train[,1:ncol(train)-1])
+testPC <- predict(prComp, test[,1:ncol(test)-1])
+validationPC <- predict(prComp, validation[,1:ncol(validation)-1])
+```
+Here, PCA is able to reduce the dimention of the dataset from 46 to 33 while retaining 99% of the information. This reduce model complexity and improves scalibility. 
+
+##Prediction models
+
+###Decision Tree
+First let's try modelling with Decision tree. In this model, 10 folds are created and used in cross-validation method.
+```{r, echo=TRUE}
+set.seed(54321)
+fitControl <- trainControl(method = "cv", number = 10)
+modFitDT <- train(x = trainPC, y = train$classe, method="rpart", trControl = fitControl)
+```
+
+The predicted out of sample accuracy is `r confusionMatrix(test$classe, predict(modFitDT,testPC))$overall[1]`. The accuracy is low and we need to fit another model. Please refer to figure 1 in the appendix for the fancy decision tree representation.
+
+###Random Forest
+Random Forest should yield a more accurate model. Since RF handles cross validation on the fly, we do not need to specify the number of folds here.
+```{r}
+cluster <- makeCluster(detectCores() - 2)
+registerDoParallel(cluster)
+```
+
+```{r, echo = TRUE, results='hold'}
+set.seed(54321)
+fitControl <- trainControl(allowParallel = TRUE)
+modFitRF <- train(x = trainPC, y = train$classe, method="rf",trControl = fitControl)
+
+modFitRF
+confusionMatrix(test$classe, predict(modFitRF,testPC))
+```
+The accuracy of the model is `r confusionMatrix(test$classe, predict(modFitRF,testPC))$overall[1]`.
+Hence out of sample error = 1 - `r confusionMatrix(test$classe, predict(modFitRF,testPC))$overall[1]` = `r 1 - confusionMatrix(test$classe, predict(modFitRF,testPC))$overall[1]`
+```{r}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+##Prediction
+```{r, echo=TRUE, results='hold'}
+predict(modFitRF,validationPC)
+```
+
+##Summary
+The Random Forest model produced stunning accuracy of `r confusionMatrix(test$classe, predict(modFitRF,testPC))$overall[1]`. The results are satisfactory given the chances of correctly predicting all 20 cases in the test dataset is minimal. The Decision Tree model performed poorly and was disgarded.
+
+#Appendix
+```{r, results='hold'}
+fancyRpartPlot(modFitDT$finalModel, cex = .5, title("Figure 1\nDecision Tree Plot"))
+```
